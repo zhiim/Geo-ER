@@ -20,9 +20,9 @@ class GeoER(nn.Module):
 
         hidden_size = config.lm_hidden
 
-        self.language_model = BertModel.from_pretrained("./bert")
-        self.neighbert = BertModel.from_pretrained("./bert")
-        self.tokenizer = BertTokenizer.from_pretrained("./bert")
+        self.language_model = BertModel.from_pretrained("./models/bert")
+        self.neighbert = BertModel.from_pretrained("./models/bert")
+        self.tokenizer = BertTokenizer.from_pretrained("./models/bert")
 
         self.device = device
         self.finetuning = finetuning
@@ -208,56 +208,64 @@ class GeoERX(nn.Module):
         self,
         device="cpu",
         finetuning=True,
-        c_emb=config.c_em,
-        n_emb=config.n_em,
-        a_emb=config.a_em,
+        dist_emb=256,
+        max_length=128,
         dropout=0.1,
     ):
         """GeoER without considering neighbors"""
         super().__init__()
 
-        self.language_model = BertModel.from_pretrained("./bert")
+        self.tokenizer = BertTokenizer.from_pretrained("./models/bert-chinese")
+
+        self.language_model = BertModel.from_pretrained("./models/bert-chinese")
 
         self.device = device
         self.finetuning = finetuning
 
+        self.max_length = max_length
+
+        self.coord_linear = nn.Linear(1, dist_emb)
+
+        hidden_size = 768
+        self.linear1 = nn.Linear(
+            hidden_size + dist_emb,
+            (hidden_size + dist_emb) // 2,
+        )
+        self.linear2 = nn.Linear((hidden_size + dist_emb) // 2, 2)
+
         self.drop = nn.Dropout(dropout)
-        self.coord_linear = nn.Linear(1, 2 * c_emb)
 
         self.gelu = nn.GELU()
 
-    def forward(self, x, x_coord, x_n, att_mask, training=True):
-        x = x.to(self.device)
-        att_mask = att_mask.to(self.device)
-        x_coord = x_coord.to(self.device)
-
-        if len(x.shape) < 2:
-            x = x.unsqueeze(0)
-
-        if len(att_mask.shape) < 2:
-            att_mask = att_mask.unsqueeze(0)
-
-        while len(x_coord.shape) < 2:
-            x_coord = x_coord.unsqueeze(0)
+    def forward(self, source_text, pair_text, dist, training=True):
+        tokens = self.tokenizer(
+            text=source_text,
+            text_pair=pair_text,
+            add_special_tokens=True,
+            padding="max_length",
+            max_length=self.max_length,
+            return_tensors="pt",
+        )
+        tokens = {key: value.to(self.device) for key, value in tokens.items()}
 
         if training and self.finetuning:
             self.language_model.train()
             self.train()
-            output = self.language_model(x, attention_mask=att_mask)
-            pooled_output = output[0][
+            bert_out = self.language_model(**tokens)
+            pooled_output = bert_out[0][
                 :, 0, :
             ]  # take only 0 (the position of the [CLS])
 
         else:
             self.language_model.eval()
             with torch.no_grad():
-                output = self.language_model(x, attention_mask=att_mask)
-                pooled_output = output[0][:, 0, :]
+                bert_out = self.language_model(**tokens)
+                pooled_output = bert_out[0][:, 0, :]
 
-        x_coord = x_coord.transpose(0, 1)
-        x_coord = self.coord_linear(x_coord)
+        dist = dist.view(-1, 1).to(torch.float32).to(self.device)
+        dist = self.coord_linear(dist)
 
-        output = torch.cat([pooled_output, x_coord], 1)
+        output = torch.cat([pooled_output, dist], 1)
 
         output = self.linear2(self.drop(self.gelu(self.linear1(output))))
 

@@ -3,6 +3,7 @@ from difflib import SequenceMatcher
 from io import open
 from math import atan2, cos, radians, sin, sqrt
 
+import torch
 from transformers import BertTokenizer
 
 import config
@@ -79,7 +80,7 @@ def get_lat_long(entity):
 
 
 def prepare_dataset(path, n_path, max_seq_len=128):
-    tokenizer = BertTokenizer.from_pretrained("./bert")
+    tokenizer = BertTokenizer.from_pretrained("./models/bert")
 
     data_x = []
     coord_x = []
@@ -112,3 +113,8 @@ def prepare_dataset(path, n_path, max_seq_len=128):
         neigh = json.load(f)
 
     return data_x, coord_x, neigh, data_y
+
+
+def get_device():
+    """support gpu or not"""
+    return "cuda" if torch.cuda.is_available() else "cpu"

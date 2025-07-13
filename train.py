@@ -1,45 +1,44 @@
-import pickle
+import os
+from pathlib import Path
 
-import numpy as np
 import torch
-from torch import nn, optim
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    precision_score,
+    recall_score,
+)
+from torch import optim
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 from transformers import get_linear_schedule_with_warmup
 
 
-def train_GeoER(
+def train(
     model,
-    train_x,
-    train_coord,
-    train_n,
-    train_y,
-    valid_x,
-    valid_coord,
-    valid_n,
-    valid_y,
-    test_x,
-    test_coord,
-    test_n,
-    test_y,
+    dataset_train,
+    dataset_val,
+    criterion,
     device,
     save_path,
-    epochs=10,
     batch_size=32,
+    epochs=10,
     lr=3e-5,
 ):
-    opt = optim.Adam(params=model.parameters(), lr=lr)
-    criterion = nn.NLLLoss()
+    save_path = Path(save_path)
 
-    valid_x_tensor = torch.tensor(valid_x)
-    valid_coord_tensor = torch.tensor(valid_coord)
-    valid_y_tensor = torch.tensor(valid_y)
+    model.to(device)
 
-    test_x_tensor = torch.tensor(test_x)
-    test_coord_tensor = torch.tensor(test_coord)
-    test_y_tensor = torch.tensor(test_y)
+    train_loader = DataLoader(dataset=dataset_train, batch_size=batch_size)
+    val_loader = DataLoader(dataset=dataset_val, batch_size=batch_size)
 
-    num_steps = (len(train_x) // batch_size) * epochs
+    opt = optim.Adam(
+        params=filter(lambda p: p.requires_grad, model.parameters()), lr=lr
+    )
+
+    num_steps = (len(train_loader) // batch_size) * epochs
     scheduler = get_linear_schedule_with_warmup(
-        opt, num_warmup_steps=0, num_training_steps=num_steps
+        opt, num_warmup_steps=int(0.1 * num_steps), num_training_steps=num_steps
     )
 
     best_f1 = 0.0
@@ -48,75 +47,60 @@ def train_GeoER(
         model.train()
         print("\n*** EPOCH:", epoch + 1, "***\n")
 
-        i = 0
-        step = 1
-
-        while i < len(train_x):
+        for batch_idx, (source_text, pair_text, dist, label) in enumerate(
+            train_loader
+        ):
             opt.zero_grad()
-            loss = torch.tensor(0.0).to(device)
 
-            if i + batch_size > len(train_x):
-                y = train_y[i:]
-                x = train_x[i:]
-                x_coord = train_coord[i:]
-                x_n = train_n[i:]
-            else:
-                y = train_y[i : i + batch_size]
-                x = train_x[i : i + batch_size]
-                x_coord = train_coord[i : i + batch_size]
-                x_n = train_n[i : i + batch_size]
-
-            y = torch.tensor(y).view(-1).to(device)
-            x = torch.tensor(x)
-            x_coord = torch.tensor(x_coord)
-            att_mask = torch.tensor(np.where(x != 0, 1, 0))
-
-            pred = model(x, x_coord, x_n, att_mask)
-
-            loss = criterion(pred, y)
-
+            pred = model(source_text, pair_text, dist)
+            loss = criterion(pred, label)
             loss.backward()
             opt.step()
 
             if device == "cuda":
-                print("Step:", step, "Loss:", loss.cpu().detach().numpy())
+                print(
+                    "Step: {} / {}".format(
+                        batch_idx + epoch * len(dataset_train),
+                        epochs * len(dataset_train),
+                    ),
+                    "Loss: {}".format(loss.cpu().detach().numpy()),
+                )
             else:
-                print("Step:", step, "Loss:", loss)
+                print(
+                    "Step: {} / {}".format(
+                        batch_idx + epoch * len(dataset_train),
+                        epochs * len(dataset_train),
+                    ),
+                    "Loss: {}".format(loss),
+                )
 
-            step += 1
             scheduler.step()
-            i += batch_size
 
         print("\n*** Validation Epoch:", epoch + 1, "***\n")
-        this_f1 = validate_GeoER(
+        this_f1 = validate(
             model,
-            valid_x_tensor,
-            valid_coord_tensor,
-            valid_n,
-            valid_y_tensor,
-            device,
-        )
-
-        print("\n*** Test Epoch:", epoch + 1, "***\n")
-        _ = validate_GeoER(
-            model,
-            test_x_tensor,
-            test_coord_tensor,
-            test_n,
-            test_y_tensor,
+            val_loader,
             device,
         )
 
         if this_f1 > best_f1:
             best_f1 = this_f1
-            pickle.dump(model, open(save_path, "wb"))
+            torch.save(model.state_dict(), save_path / "model_best.pth")
+
+        torch.save(
+            model.state_dict(), save_path / "model_epoch_{}".format(epoch)
+        )
+        checkpoints = [
+            chkpt
+            for chkpt in os.listdir(save_path)
+            if chkpt.endswith(".pth") and chkpt != "model_best.pth"
+        ]
+        if len(checkpoints) > 10:
+            checkpoints.sort(key=lambda x: int(x.split("_")[-1].split(".")[0]))
+            os.remove(save_path / checkpoints[0])
 
 
-def validate_GeoER(
-    model, valid_x_tensor, valid_coord_tensor, valid_n, valid_y_tensor, device
-):
-    attention_mask = np.where(valid_x_tensor != 0, 1, 0)
-    attention_mask = torch.tensor(attention_mask)
+def validate(model, val_loader, device):
     model.eval()
 
     acc = 0.0
@@ -124,31 +108,20 @@ def validate_GeoER(
     recall = 0.0
     f1 = 0.0
 
-    for i in range(valid_x_tensor.shape[0]):
-        y = valid_y_tensor[i].view(-1).to(device)
-        x = valid_x_tensor[i]
-        x_coord = valid_coord_tensor[i]
-        x_n = valid_n[i : i + 1]
-        att_mask = attention_mask[i]
+    with torch.no_grad():
+        for source_text, pair_text, dist, label in tqdm(val_loader):
+            pred = model(source_text, pair_text, dist, training=False)
 
-        pred = model(x, x_coord, x_n, att_mask, training=False)
+            acc += accuracy_score(label, torch.argmax(pred))
+            prec += precision_score(label, torch.argmax(pred))
+            recall += recall_score(label, torch.argmax(pred))
+            f1 += f1_score(label, torch.argmax(pred))
 
-        if torch.argmax(pred) == y:
-            acc += 1
+    acc /= len(val_loader)
+    prec /= len(val_loader)
+    recall /= len(val_loader)
+    f1 /= len(val_loader)
 
-            if y == 1:
-                recall += 1
-
-        if torch.argmax(pred) == 1:
-            prec += 1
-
-    acc = acc / valid_x_tensor.shape[0]
-    if prec > 0:
-        prec = recall / prec
-    recall = recall / torch.sum(valid_y_tensor).numpy()
-
-    if prec + recall > 0:
-        f1 = 2 * prec * recall / (prec + recall)
     print("Accuracy:", acc)
     print("Precision:", prec)
     print("Recall:", recall)
