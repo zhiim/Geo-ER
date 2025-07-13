@@ -79,7 +79,7 @@ def get_lat_long(entity):
 
 
 def prepare_dataset(path, n_path, max_seq_len=128):
-    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+    tokenizer = BertTokenizer.from_pretrained("./bert")
 
     data_x = []
     coord_x = []

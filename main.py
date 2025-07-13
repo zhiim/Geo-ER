@@ -2,7 +2,7 @@ import argparse
 
 import config
 from functions import prepare_dataset
-from model import GeoER
+from model import GeoERX
 from train import train_GeoER
 
 parser = argparse.ArgumentParser(description="GeoER")
@@ -61,7 +61,7 @@ print("Valid size:", len(valid_x))
 print("Test size:", len(test_x))
 
 
-model = GeoER(device=device, dropout=config.dropout)
+model = GeoERX(device=device, dropout=config.dropout)
 model = model.to(device)
 
 train_GeoER(

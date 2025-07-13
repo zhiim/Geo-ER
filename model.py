@@ -20,9 +20,9 @@ class GeoER(nn.Module):
 
         hidden_size = config.lm_hidden
 
-        self.language_model = BertModel.from_pretrained("bert-base-uncased")
-        self.neighbert = BertModel.from_pretrained("bert-base-uncased")
-        self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+        self.language_model = BertModel.from_pretrained("./bert")
+        self.neighbert = BertModel.from_pretrained("./bert")
+        self.tokenizer = BertTokenizer.from_pretrained("./bert")
 
         self.device = device
         self.finetuning = finetuning
@@ -197,6 +197,67 @@ class GeoER(nn.Module):
         x_coord = self.coord_linear(x_coord)
 
         output = torch.cat([pooled_output, x_coord, x_neighbors], 1)
+
+        output = self.linear2(self.drop(self.gelu(self.linear1(output))))
+
+        return F.log_softmax(output, dim=1)
+
+
+class GeoERX(nn.Module):
+    def __init__(
+        self,
+        device="cpu",
+        finetuning=True,
+        c_emb=config.c_em,
+        n_emb=config.n_em,
+        a_emb=config.a_em,
+        dropout=0.1,
+    ):
+        """GeoER without considering neighbors"""
+        super().__init__()
+
+        self.language_model = BertModel.from_pretrained("./bert")
+
+        self.device = device
+        self.finetuning = finetuning
+
+        self.drop = nn.Dropout(dropout)
+        self.coord_linear = nn.Linear(1, 2 * c_emb)
+
+        self.gelu = nn.GELU()
+
+    def forward(self, x, x_coord, x_n, att_mask, training=True):
+        x = x.to(self.device)
+        att_mask = att_mask.to(self.device)
+        x_coord = x_coord.to(self.device)
+
+        if len(x.shape) < 2:
+            x = x.unsqueeze(0)
+
+        if len(att_mask.shape) < 2:
+            att_mask = att_mask.unsqueeze(0)
+
+        while len(x_coord.shape) < 2:
+            x_coord = x_coord.unsqueeze(0)
+
+        if training and self.finetuning:
+            self.language_model.train()
+            self.train()
+            output = self.language_model(x, attention_mask=att_mask)
+            pooled_output = output[0][
+                :, 0, :
+            ]  # take only 0 (the position of the [CLS])
+
+        else:
+            self.language_model.eval()
+            with torch.no_grad():
+                output = self.language_model(x, attention_mask=att_mask)
+                pooled_output = output[0][:, 0, :]
+
+        x_coord = x_coord.transpose(0, 1)
+        x_coord = self.coord_linear(x_coord)
+
+        output = torch.cat([pooled_output, x_coord], 1)
 
         output = self.linear2(self.drop(self.gelu(self.linear1(output))))
 
